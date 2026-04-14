@@ -1,28 +1,28 @@
 """
-Step 1: Load a .pth model and run PyTorch inference
-====================================================
+Step 1: Load a CLIP-ReID .pth model and run PyTorch inference
+==============================================================
 
 What this teaches:
     - How .pth files work (they're just saved weights)
-    - How to load weights into a model architecture
+    - How to load weights into the REAL CLIP-ReID architecture
     - How to preprocess images for the model
-    - How to extract feature embeddings
+    - How to extract feature embeddings for person re-identification
 
 CLIP-ReID takes a person image (256x128) and outputs a feature
-embedding vector. Two images of the same person will have similar
-embeddings. Different people will have different embeddings.
+embedding vector (1280-dim for ViT-B-16). Two images of the same
+person will have similar embeddings.
 
     Image → Model → Embedding (1280-dim vector)
 
-    Compare embeddings:
-        same person  → distance is small
-        diff person  → distance is large
-
 Usage:
-    python 01_load_model.py --weights path/to/model.pth --image path/to/person.jpg
+    # With pretrained weights
+    python 01_load_model.py --weights path/to/ViT-B-16_60.pth --image person.jpg
 
-    # If no image provided, uses a random tensor for testing
-    python 01_load_model.py --weights path/to/model.pth
+    # Without weights (random init, for testing the pipeline)
+    python 01_load_model.py
+
+    # Compare two images
+    python 01_load_model.py --weights path/to/model.pth --image1 person_cam1.jpg --image2 person_cam2.jpg
 """
 
 import torch
@@ -34,68 +34,63 @@ import argparse
 import os
 import sys
 
+# ─── Add CLIP-ReID repo to Python path ───────────────────────
+# This lets us import the real model code from the submodule
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'clip_reid_repo'))
 
-# ─── Step 1: Define the model architecture ───────────────────
-# The .pth file only contains WEIGHTS (numbers).
-# You need the architecture (structure) separately.
-# Think of it like: .pth = the filling, architecture = the mold.
-#
-# For CLIP-ReID, the backbone is a Vision Transformer (ViT-B/16).
-# We'll use a simplified version that extracts embeddings.
+from config import cfg as default_cfg
+from model.make_model_clipreid import make_model
 
-class SimpleViTReID(nn.Module):
+
+# ─── Step 1: Build config for the model ──────────────────────
+# CLIP-ReID uses a config system (YACS). We need to set the right
+# values to match the .pth weights we're loading.
+
+def get_cfg(config_file=None, img_size=(256, 128), model_name='ViT-B-16',
+            num_classes=751, dataset='market1501'):
     """
-    Simplified ReID model using ViT backbone.
-    In production, you'd use the full CLIP-ReID architecture.
-    This demonstrates the concept: image → embedding.
+    Create config for CLIP-ReID model.
+
+    Args:
+        config_file: path to .yml config (optional, uses defaults if None)
+        img_size: (height, width) — must match training config
+        model_name: 'ViT-B-16' or 'RN50'
+        num_classes: number of person IDs in the training dataset
+        dataset: dataset name (affects prompt text)
     """
-    def __init__(self, num_classes=751, embed_dim=768):
-        super().__init__()
-        # Load pretrained ViT-B/16 as backbone
-        self.backbone = torch.hub.load(
-            'facebookresearch/dino:main', 'dino_vitb16', pretrained=True
-        )
-        self.embed_dim = embed_dim
+    cfg = default_cfg.clone()
 
-        # Bottleneck: reduces dimension + normalizes
-        self.bottleneck = nn.Sequential(
-            nn.Linear(embed_dim, 512),
-            nn.BatchNorm1d(512),
-            nn.ReLU(inplace=True),
-        )
+    if config_file and os.path.exists(config_file):
+        cfg.merge_from_file(config_file)
+    else:
+        # Set defaults for ViT-B-16 on Market-1501
+        cfg.MODEL.NAME = model_name
+        cfg.MODEL.NECK = 'bnneck'
+        cfg.MODEL.COS_LAYER = False
+        cfg.MODEL.STRIDE_SIZE = [16, 16]
+        cfg.MODEL.SIE_COE = 3.0
+        cfg.MODEL.SIE_CAMERA = False
+        cfg.MODEL.SIE_VIEW = False
+        cfg.INPUT.SIZE_TRAIN = list(img_size)
+        cfg.INPUT.SIZE_TEST = list(img_size)
+        cfg.TEST.NECK_FEAT = 'after'
+        cfg.TEST.FEAT_NORM = 'yes'
+        cfg.DATASETS.NAMES = dataset
 
-        # Classifier head (used during training, optional during inference)
-        self.classifier = nn.Linear(512, num_classes)
-
-    def forward(self, x):
-        # Extract features from ViT backbone
-        features = self.backbone(x)  # (batch, 768)
-
-        # Bottleneck projection
-        projected = self.bottleneck(features)  # (batch, 512)
-
-        if self.training:
-            logits = self.classifier(projected)
-            return logits, features, projected
-        else:
-            # During inference, return concatenated embedding
-            embedding = torch.cat([features, projected], dim=1)  # (batch, 1280)
-            # L2 normalize for cosine similarity
-            embedding = nn.functional.normalize(embedding, p=2, dim=1)
-            return embedding
+    cfg.freeze()
+    return cfg
 
 
 # ─── Step 2: Image preprocessing ─────────────────────────────
-# The model expects a specific input format.
-# This MUST match what the model was trained with.
+# Must match the training preprocessing exactly.
 
-def get_transform():
+def get_transform(img_size=(256, 128)):
     """Preprocessing pipeline matching CLIP-ReID training."""
     return transforms.Compose([
-        transforms.Resize((256, 128)),          # ReID standard: height > width
-        transforms.ToTensor(),                   # PIL Image → tensor (0-1)
+        transforms.Resize(img_size),
+        transforms.ToTensor(),
         transforms.Normalize(
-            mean=[0.5, 0.5, 0.5],               # CLIP normalization
+            mean=[0.5, 0.5, 0.5],    # CLIP normalization
             std=[0.5, 0.5, 0.5]
         ),
     ])
@@ -105,18 +100,27 @@ def load_image(image_path, transform):
     """Load and preprocess a single image."""
     img = Image.open(image_path).convert('RGB')
     tensor = transform(img)
-    # Add batch dimension: (3, 256, 128) → (1, 3, 256, 128)
-    return tensor.unsqueeze(0)
+    return tensor.unsqueeze(0)  # add batch dim: (3,H,W) → (1,3,H,W)
 
 
-# ─── Step 3: Load model and run inference ─────────────────────
+# ─── Step 3: Main ────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description='CLIP-ReID PyTorch Inference')
+    parser = argparse.ArgumentParser(description='CLIP-ReID Inference')
     parser.add_argument('--weights', type=str, default=None,
                         help='Path to .pth weights file')
+    parser.add_argument('--config', type=str, default=None,
+                        help='Path to .yml config file')
     parser.add_argument('--image', type=str, default=None,
-                        help='Path to person image')
+                        help='Single image for embedding extraction')
+    parser.add_argument('--image1', type=str, default=None,
+                        help='First image for ReID comparison')
+    parser.add_argument('--image2', type=str, default=None,
+                        help='Second image for ReID comparison')
+    parser.add_argument('--num-classes', type=int, default=751,
+                        help='Number of classes (751 for Market-1501)')
+    parser.add_argument('--img-size', type=int, nargs=2, default=[256, 128],
+                        help='Image size: height width')
     parser.add_argument('--device', type=str, default='auto',
                         help='Device: auto, cpu, or cuda')
     args = parser.parse_args()
@@ -128,70 +132,80 @@ def main():
         device = torch.device(args.device)
     print(f"Device: {device}")
 
+    # ── Build config ──
+    img_size = tuple(args.img_size)
+    cfg = get_cfg(
+        config_file=args.config,
+        img_size=img_size,
+        num_classes=args.num_classes,
+    )
+    print(f"Model: {cfg.MODEL.NAME}")
+    print(f"Image size: {img_size}")
+    print(f"Num classes: {args.num_classes}")
+
     # ── Create model ──
-    print("Creating model architecture...")
-    model = SimpleViTReID(num_classes=751, embed_dim=768)
+    # make_model needs: cfg, num_class, camera_num, view_num
+    # For inference without SIE, camera_num and view_num don't matter
+    print("Creating CLIP-ReID model...")
+    model = make_model(cfg, num_class=args.num_classes, camera_num=0, view_num=0)
 
-    # ── Load weights (if provided) ──
+    # ── Load weights ──
     if args.weights and os.path.exists(args.weights):
-        print(f"Loading weights from: {args.weights}")
-        # torch.load reads the .pth file
-        # map_location ensures it works on CPU even if saved on GPU
-        state_dict = torch.load(args.weights, map_location=device)
-
-        # Some .pth files wrap weights in a dict with a key like 'model' or 'state_dict'
-        if 'state_dict' in state_dict:
-            state_dict = state_dict['state_dict']
-        elif 'model' in state_dict:
-            state_dict = state_dict['model']
-
-        # strict=False ignores mismatched keys (useful for partial loading)
-        model.load_state_dict(state_dict, strict=False)
-        print("Weights loaded successfully!")
+        print(f"Loading weights: {args.weights}")
+        model.load_param(args.weights)
     else:
-        print("No weights provided — using randomly initialized model (for demo)")
+        print("No weights provided — using random initialization (for pipeline testing)")
 
     model = model.to(device)
-    model.eval()  # Set to inference mode (disables dropout, batchnorm in eval mode)
+    model.eval()
 
-    # ── Prepare input ──
-    transform = get_transform()
-
-    if args.image and os.path.exists(args.image):
-        print(f"Loading image: {args.image}")
-        input_tensor = load_image(args.image, transform).to(device)
-    else:
-        print("No image provided — using random tensor (shape: 1, 3, 256, 128)")
-        input_tensor = torch.randn(1, 3, 256, 128).to(device)
+    # ── Prepare transform ──
+    transform = get_transform(img_size)
 
     # ── Run inference ──
-    print("\nRunning inference...")
-    with torch.no_grad():  # Disable gradient computation (faster, less memory)
-        embedding = model(input_tensor)
+    if args.image1 and args.image2:
+        # Compare two images
+        print(f"\nComparing two images...")
+        img1 = load_image(args.image1, transform).to(device)
+        img2 = load_image(args.image2, transform).to(device)
 
-    print(f"\n{'='*50}")
-    print(f"Input shape:     {list(input_tensor.shape)}")
-    print(f"Embedding shape: {list(embedding.shape)}")
-    print(f"Embedding (first 10 values): {embedding[0][:10].cpu().numpy().round(4)}")
-    print(f"Embedding norm:  {torch.norm(embedding[0]).item():.4f} (should be ~1.0 if L2 normalized)")
+        with torch.no_grad():
+            emb1 = model(img1)
+            emb2 = model(img2)
 
-    # ── Compare two images (if running in production) ──
-    print(f"\n{'='*50}")
-    print("How ReID works:")
-    print("  1. Extract embedding for person in Camera A")
-    print("  2. Extract embedding for person in Camera B")
-    print("  3. Compute cosine similarity between embeddings")
-    print("  4. High similarity = same person")
+        # Normalize
+        emb1 = nn.functional.normalize(emb1, p=2, dim=1)
+        emb2 = nn.functional.normalize(emb2, p=2, dim=1)
 
-    # Demo: compare with a second random input
-    input2 = torch.randn(1, 3, 256, 128).to(device)
-    with torch.no_grad():
-        embedding2 = model(input2)
+        similarity = torch.cosine_similarity(emb1, emb2).item()
 
-    similarity = torch.nn.functional.cosine_similarity(embedding, embedding2)
-    print(f"\n  Similarity between two random inputs: {similarity.item():.4f}")
-    print(f"  (Random inputs → low similarity, same person → high similarity)")
-    print(f"{'='*50}")
+        print(f"  Image 1: {args.image1}")
+        print(f"  Image 2: {args.image2}")
+        print(f"  Embedding shape: {list(emb1.shape)}")
+        print(f"  Cosine similarity: {similarity:.4f}")
+        print(f"  Match: {'LIKELY SAME PERSON' if similarity > 0.5 else 'DIFFERENT PEOPLE'}")
+
+    else:
+        # Single image (or random input)
+        if args.image and os.path.exists(args.image):
+            print(f"\nLoading image: {args.image}")
+            input_tensor = load_image(args.image, transform).to(device)
+        else:
+            print("\nNo image — using random tensor")
+            input_tensor = torch.randn(1, 3, *img_size).to(device)
+
+        with torch.no_grad():
+            embedding = model(input_tensor)
+
+        # Normalize
+        embedding = nn.functional.normalize(embedding, p=2, dim=1)
+
+        print(f"\n{'='*50}")
+        print(f"Input shape:     {list(input_tensor.shape)}")
+        print(f"Embedding shape: {list(embedding.shape)}")
+        print(f"Embedding (first 10): {embedding[0][:10].cpu().numpy().round(4)}")
+        print(f"Embedding norm:  {torch.norm(embedding[0]).item():.4f}")
+        print(f"{'='*50}")
 
 
 if __name__ == '__main__':
