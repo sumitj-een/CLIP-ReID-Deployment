@@ -1,0 +1,174 @@
+# ============================================================
+# Deploy Triton on Kubernetes
+# ============================================================
+#
+# This brings everything together:
+#   Docker (Triton image) + K8s (Deployment + Service) + GPU (nodeSelector)
+#
+# In production, the model is stored in S3/GCS, not baked into the image.
+# An init container downloads it (like een-vlm-worker).
+#
+# Commands:
+#   kubectl apply -f deployment.yaml
+#   kubectl get pods -l app=triton
+#   kubectl logs deployment/triton-server
+#
+#   # Access
+#   minikube service triton-http --url    # or port-forward on real cluster
+#   kubectl port-forward svc/triton-http 8000:8000
+#   python 06_triton_client.py --health
+# ============================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: triton-config
+data:
+  MODEL_NAME: "clip_reid"
+
+---
+
+# PVC for model storage
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: model-store
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+
+---
+
+# Triton Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: triton-server
+  labels:
+    app: triton
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: triton
+  template:
+    metadata:
+      labels:
+        app: triton
+    spec:
+      # Init container: download model from S3
+      initContainers:
+        - name: model-downloader
+          image: python:3.12-slim
+          command: ["sh", "-c"]
+          args:
+            - |
+              pip install boto3 -q
+              python3 -c "
+              # In production: download from S3
+              # import boto3
+              # s3 = boto3.client('s3')
+              # s3.download_file('bucket', 'models/clip_reid/model.onnx', '/models/clip_reid/1/model.onnx')
+              print('Model download would happen here')
+              "
+          volumeMounts:
+            - name: model-store
+              mountPath: /models
+
+      containers:
+        - name: triton
+          image: nvcr.io/nvidia/tritonserver:24.01-py3
+          command: ["tritonserver"]
+          args: ["--model-repository=/models"]
+          ports:
+            - containerPort: 8000    # HTTP
+              name: http
+            - containerPort: 8001    # gRPC
+              name: grpc
+            - containerPort: 8002    # Metrics
+              name: metrics
+          volumeMounts:
+            - name: model-store
+              mountPath: /models
+          resources:
+            requests:
+              memory: "4Gi"
+              cpu: "1000m"
+              nvidia.com/gpu: 1
+            limits:
+              memory: "8Gi"
+              cpu: "4000m"
+              nvidia.com/gpu: 1
+          readinessProbe:
+            httpGet:
+              path: /v2/health/ready
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /v2/health/live
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 15
+
+      volumes:
+        - name: model-store
+          persistentVolumeClaim:
+            claimName: model-store
+
+      nodeSelector:
+        role: gpu                    # only schedule on GPU nodes
+
+---
+
+# HTTP Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: triton-http
+spec:
+  type: ClusterIP
+  selector:
+    app: triton
+  ports:
+    - port: 8000
+      targetPort: 8000
+      name: http
+
+---
+
+# gRPC Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: triton-grpc
+spec:
+  type: ClusterIP
+  selector:
+    app: triton
+  ports:
+    - port: 8001
+      targetPort: 8001
+      name: grpc
+
+---
+
+# Metrics Service (for Prometheus scraping)
+apiVersion: v1
+kind: Service
+metadata:
+  name: triton-metrics
+  labels:
+    app: triton
+spec:
+  type: ClusterIP
+  selector:
+    app: triton
+  ports:
+    - port: 8002
+      targetPort: 8002
+      name: metrics

@@ -1,0 +1,71 @@
+# ============================================================
+# Triton Model Configuration
+# ============================================================
+#
+# This file tells Triton:
+#   - What format the model is in (ONNX, TensorRT, PyTorch)
+#   - What inputs the model expects
+#   - What outputs the model produces
+#   - How to handle batching
+#   - How many model instances to run
+#
+# Triton model repository structure:
+#
+#   05_triton_repo/
+#   └── clip_reid/               ← model name (used in API calls)
+#       ├── config.pbtxt         ← this file
+#       └── 1/                   ← version 1
+#           └── model.onnx      ← the actual model file
+#
+# Version folders (1/, 2/, 3/) let you serve multiple versions
+# simultaneously and switch between them without downtime.
+# ============================================================
+
+name: "clip_reid"
+platform: "onnxruntime_onnx"          # use ONNX Runtime backend
+# For TensorRT: platform: "tensorrt_plan"
+# For PyTorch:  platform: "pytorch_libtorch"
+
+# ── Maximum batch size ──
+# Triton can batch multiple requests together for efficiency.
+# 0 = model handles batching itself (dynamic axes in ONNX)
+max_batch_size: 8
+
+# ── Input specification ──
+# Must match exactly what the model expects.
+input [
+  {
+    name: "input"                     # must match ONNX input name
+    data_type: TYPE_FP32
+    dims: [3, 256, 128]              # CHW format (no batch dim — Triton adds it)
+  }
+]
+
+# ── Output specification ──
+output [
+  {
+    name: "embedding"                 # must match ONNX output name
+    data_type: TYPE_FP32
+    dims: [1280]                     # embedding dimension
+  }
+]
+
+# ── Instance count ──
+# How many copies of the model to load.
+# More instances = more parallel requests, but more GPU memory.
+instance_group [
+  {
+    count: 1
+    kind: KIND_GPU                   # run on GPU
+    # kind: KIND_CPU                 # use this for CPU-only testing
+  }
+]
+
+# ── Dynamic batching ──
+# Triton collects individual requests and batches them together.
+# Instead of processing 8 requests one by one (8 * 5ms = 40ms),
+# it batches them into one call (1 * 8ms = 8ms).
+dynamic_batching {
+  preferred_batch_size: [4, 8]       # try to form batches of 4 or 8
+  max_queue_delay_microseconds: 100  # wait up to 100μs to form a batch
+}
