@@ -22,9 +22,9 @@
 # ============================================================
 
 name: "clip_reid"
-platform: "onnxruntime_onnx"          # use ONNX Runtime backend
-# For TensorRT: platform: "tensorrt_plan"
-# For PyTorch:  platform: "pytorch_libtorch"
+platform: "tensorrt_plan"             # use TensorRT backend (fastest)
+# For ONNX: platform: "onnxruntime_onnx"
+# For PyTorch: platform: "pytorch_libtorch"
 
 # ── Maximum batch size ──
 # Triton can batch multiple requests together for efficiency.
