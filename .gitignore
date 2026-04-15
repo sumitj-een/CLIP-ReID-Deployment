@@ -3,3 +3,4 @@ test_01_images/
 logs/
 *.onnx
 *.plan
+*.onnx.bak
