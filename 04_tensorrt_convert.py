@@ -147,6 +147,8 @@ def build_engine(onnx_path, output_path, fp16=False, max_batch_size=8):
 def benchmark_engine(engine_path, num_runs=100):
     """Benchmark TensorRT engine speed."""
     import numpy as np
+    import pycuda.driver as cuda
+    import pycuda.autoinit  # initialises CUDA context automatically
 
     print(f"\nBenchmarking: {engine_path}")
 
@@ -157,20 +159,37 @@ def benchmark_engine(engine_path, num_runs=100):
     context = engine.create_execution_context()
     context.set_input_shape('input', (1, 3, 256, 128))
 
-    # Allocate GPU memory
-    import cuda  # pycuda or cuda-python
+    # Allocate GPU memory for input and copy data to device
     input_data = np.random.randn(1, 3, 256, 128).astype(np.float32)
+    d_input = cuda.mem_alloc(input_data.nbytes)
+    cuda.memcpy_htod(d_input, input_data)
+
+    # Discover output tensor name + shape, allocate GPU memory for it
+    output_name = engine.get_tensor_name(1)
+    output_shape = tuple(context.get_tensor_shape(output_name))
+    output_data = np.empty(output_shape, dtype=np.float32)
+    d_output = cuda.mem_alloc(output_data.nbytes)
+
+    # pycuda device pointers are passed as integers in the bindings list
+    bindings = [int(d_input), int(d_output)]
+    stream = cuda.Stream()
 
     # Warmup
     for _ in range(10):
-        context.execute_v2(bindings=[input_data.ctypes.data])
+        context.execute_async_v2(bindings=bindings, stream_handle=stream.handle)
+        stream.synchronize()
 
     # Benchmark
     times = []
     for _ in range(num_runs):
         start = time.time()
-        context.execute_v2(bindings=[input_data.ctypes.data])
+        context.execute_async_v2(bindings=bindings, stream_handle=stream.handle)
+        stream.synchronize()
         times.append((time.time() - start) * 1000)
+
+    # Cleanup GPU memory
+    d_input.free()
+    d_output.free()
 
     times = np.array(times)
     print(f"  Mean:   {times.mean():.2f} ms")
