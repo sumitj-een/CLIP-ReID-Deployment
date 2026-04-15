@@ -46,8 +46,8 @@ from torchvision import transforms
 
 
 MODEL_NAME = "clip_reid"
-TRITON_HTTP_URL = "localhost:8000"
-TRITON_GRPC_URL = "localhost:8001"
+TRITON_HTTP_URL = "localhost:8010"
+TRITON_GRPC_URL = "localhost:8011"
 
 
 def get_transform():
