@@ -19,7 +19,7 @@ from model.make_model_clipreid import make_model
 WEIGHTS  = '/app/Market1501_clipreid_ViT-B-16_60.pth'
 CONFIG   = '/app/clip_reid_repo/configs/person/vit_clipreid.yml'
 PERSONS  = ["0002", "0007", "0010", "0011", "0012", "0020", "0022", "0023"]
-IMG_DIR  = '/app'
+IMG_DIR  = '/app/test_01_images/'
 
 # ── Load config ──────────────────────────────────────────────────────────────
 cfg.merge_from_file(CONFIG)

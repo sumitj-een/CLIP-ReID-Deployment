@@ -1,2 +1,3 @@
 *.pth
 test_01_images/
+logs/

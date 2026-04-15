@@ -1,3 +1,4 @@
+#adding a comment to understand git pull
 """
 Step 1: Load a CLIP-ReID .pth model and run PyTorch inference
 ==============================================================
