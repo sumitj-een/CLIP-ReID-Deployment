@@ -147,6 +147,7 @@ def build_engine(onnx_path, output_path, fp16=False, max_batch_size=8):
 def benchmark_engine(engine_path, num_runs=100):
     """Benchmark TensorRT engine speed."""
     import numpy as np
+    import torch  # already installed; CUDA tensors give us GPU pointers without pycuda
 
     print(f"\nBenchmarking: {engine_path}")
 
@@ -157,19 +158,27 @@ def benchmark_engine(engine_path, num_runs=100):
     context = engine.create_execution_context()
     context.set_input_shape('input', (1, 3, 256, 128))
 
-    # Allocate GPU memory
-    import cuda  # pycuda or cuda-python
-    input_data = np.random.randn(1, 3, 256, 128).astype(np.float32)
+    # Allocate GPU memory via PyTorch — .data_ptr() returns a valid device pointer
+    input_tensor = torch.randn(1, 3, 256, 128, dtype=torch.float32, device='cuda')
+
+    output_name = engine.get_tensor_name(1)
+    output_shape = tuple(context.get_tensor_shape(output_name))
+    output_tensor = torch.empty(output_shape, dtype=torch.float32, device='cuda')
+
+    bindings = [input_tensor.data_ptr(), output_tensor.data_ptr()]
+    stream = torch.cuda.Stream()
 
     # Warmup
     for _ in range(10):
-        context.execute_v2(bindings=[input_data.ctypes.data])
+        context.execute_async_v2(bindings=bindings, stream_handle=stream.cuda_stream)
+    torch.cuda.synchronize()
 
     # Benchmark
     times = []
     for _ in range(num_runs):
         start = time.time()
-        context.execute_v2(bindings=[input_data.ctypes.data])
+        context.execute_async_v2(bindings=bindings, stream_handle=stream.cuda_stream)
+        torch.cuda.synchronize()
         times.append((time.time() - start) * 1000)
 
     times = np.array(times)
