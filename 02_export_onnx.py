@@ -18,6 +18,15 @@ ONNX is the format everyone can read.
 Usage:
     python 02_export_onnx.py --weights path/to/model.pth --output model.onnx
     python 02_export_onnx.py --output model.onnx   # no weights, random init
+
+Why export to ONNX?
+
+Right now the model runs in PyTorch. That means:
+
+You need PyTorch installed everywhere you deploy
+PyTorch does a lot of training-related work at inference (gradients, autograd) that you don't need
+It's not optimized for pure inference speed
+
 """
 
 import torch
