@@ -161,20 +161,34 @@ def verify_onnx_matches_pytorch(model, onnx_path, img_size=(256, 128), device='c
 def main():
     parser = argparse.ArgumentParser(description='Export CLIP-ReID to ONNX')
     parser.add_argument('--weights', type=str, default=None)
+    parser.add_argument('--config', type=str, default=None,
+                        help='Path to .yml config file (recommended — matches training)')
     parser.add_argument('--output', type=str, default='model.onnx')
     parser.add_argument('--num-classes', type=int, default=751)
     parser.add_argument('--img-size', type=int, nargs=2, default=[256, 128])
     args = parser.parse_args()
 
     img_size = tuple(args.img_size)
-    cfg = get_cfg(img_size=img_size, num_classes=args.num_classes)
 
+    # Use .yml config if provided (matches training exactly)
+    if args.config and os.path.exists(args.config):
+        print(f"Loading config from: {args.config}")
+        cfg = default_cfg.clone()
+        cfg.merge_from_file(args.config)
+        cfg.freeze()
+        img_size = tuple(cfg.INPUT.SIZE_TRAIN)
+    else:
+        cfg = get_cfg(img_size=img_size, num_classes=args.num_classes)
+
+    print(f"Image size: {img_size}")
     print("Creating CLIP-ReID model...")
     model = make_model(cfg, num_class=args.num_classes, camera_num=0, view_num=0)
 
     if args.weights and os.path.exists(args.weights):
         print(f"Loading weights: {args.weights}")
-        model.load_param(args.weights)
+        # Use load_state_dict (same as batch_reid_test.py)
+        state_dict = torch.load(args.weights, map_location='cpu')
+        model.load_state_dict(state_dict, strict=False)
     else:
         print("No weights — exporting random init model (for pipeline testing)")
 

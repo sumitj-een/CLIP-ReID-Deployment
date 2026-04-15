@@ -153,7 +153,7 @@ def compare_images(image1_path, image2_path, protocol='http'):
     print(f"  Image 1: {image1_path}")
     print(f"  Image 2: {image2_path}")
     print(f"  Cosine similarity: {similarity:.4f}")
-    print(f"  Match: {'LIKELY SAME PERSON' if similarity > 0.5 else 'DIFFERENT PEOPLE'}")
+    print(f"  Match: {'LIKELY SAME PERSON' if similarity > 0.87 else 'DIFFERENT PEOPLE'}")
 
     return similarity
 
