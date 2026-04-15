@@ -11,7 +11,10 @@ Speed comparison:
     PyTorch:      ~50ms per image (with overhead)
     ONNX Runtime: ~20ms per image (optimized graph)
     TensorRT:     ~5ms per image (GPU-optimized, step 04)
-
+###
+    "The speedup comes mainly from graph-level optimizations and removing training overhead.
+For example, operations like Conv → BatchNorm → ReLU can be fused into a single operation, reducing memory access and computation steps.
+ONNX Runtime also executes a static graph without Python or autograd, so inference becomes more efficient."
 Usage:
     # First export the model (step 02)
     python 02_export_onnx.py --output model.onnx

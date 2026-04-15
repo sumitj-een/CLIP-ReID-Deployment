@@ -14,12 +14,36 @@ How TensorRT optimizes:
     3. Reduces precision (FP32 → FP16 → INT8) with minimal accuracy loss
     4. Optimizes memory layout for GPU cache
 
+ONNX Runtime:
+    General-purpose optimizer
+    Works across CPU / GPU
+    Moderate optimization
+
+TensorRT:
+    Hardware-specific compiler
+    Built for NVIDIA GPUs
+    Aggressive optimization
+
 Speed progression:
     PyTorch:      ~50ms per image
     ONNX Runtime: ~20ms per image
     TensorRT FP32: ~10ms per image
     TensorRT FP16:  ~5ms per image
     TensorRT INT8:  ~2ms per image
+
+    
+The engine built successfully. Notice the size difference:
+
+.pth:   484 MB  (PyTorch, includes optimizer)
+.onnx:  329 MB  (inference only, FP32)
+.plan:  167 MB  (TensorRT, FP16 — half the precision, half the size)
+
+
+PyTorch (estimated):   ~15-20ms    
+ONNX Runtime CPU:      45.15ms     
+ONNX Runtime GPU:       5.10ms     196 images/sec
+TensorRT FP16:          2.42ms     414 images/sec  ← 2x faster than ONNX, 18x faster than CPU
+
 
 Usage (on GPU server):
     # Convert ONNX → TensorRT engine
